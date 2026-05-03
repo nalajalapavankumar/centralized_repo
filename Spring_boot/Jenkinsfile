@@ -35,7 +35,7 @@ pipeline {
                             sh '''
                                 mvn sonar:sonar \
                                 -Dsonar.projectKey=maven_java_new \
-                                -Dsonar.host.url=http://SONARQUBE-SERVER:30010
+                                -Dsonar.host.url=http://172.31.42.17:30010
                             '''
                         }
                     }
@@ -73,7 +73,7 @@ pipeline {
                 container('trivy') {
                     dir('mavenjava11-dir/spring-boot-app') {
                         sh '''
-                            echo "Scanning Docker image..."
+                            echo "Scanning Docker image"
 
                             trivy image \
                             --no-progress \
@@ -101,13 +101,13 @@ pipeline {
                         )]) {
 
                             sh '''
-                                echo $NEXUS_PASS | docker login NEXUS-IP:32000 \
+                                echo $NEXUS_PASS | docker login 172.31.42.17:32000 \
                                 -u $NEXUS_USER --password-stdin
 
                                 docker tag spring-boot-app:${BUILD_NUMBER} \
-                                NEXUS-IP:32000/spring-boot-app:${BUILD_NUMBER}
+                                172.31.42.17:32000/spring-boot-app:${BUILD_NUMBER}
 
-                                docker push NEXUS-IP:32000/spring-boot-app:${BUILD_NUMBER}
+                                docker push 172.31.42.17:32000/spring-boot-app:${BUILD_NUMBER}
                             '''
                         }
                     }
@@ -125,7 +125,7 @@ pipeline {
                             sh '''
                                 export KUBECONFIG=$KUBECONFIG
 
-                                IMAGE_ID="NEXUS-IP:32000/spring-boot-app:${BUILD_NUMBER}"
+                                IMAGE_ID="172.31.42.17:32000/spring-boot-app:${BUILD_NUMBER}"
 
                                 sed -i "s|IMAGE_NAME|${IMAGE_ID}|g" deployment.yml
 
@@ -138,22 +138,22 @@ pipeline {
             }
         }
 
-        stage("ZAP Scan") {
+        stage('ZAP Scan') {
             steps {
                 container('zap-image') {
                     dir('mavenjava11-dir/Manifests') {
 
-                        sh """
+                        sh '''
                             mkdir -p /zap/wrk
 
                             zap-baseline.py \
-                            -t http://NODE-IP:NODEPORT \
+                            -t http://65.0.89.28:31000 \
                             -r zap-report.html \
                             -J zap-report.json \
                             -I
-                        """
+                        '''
 
-                        sh "cp /zap/wrk/zap-report.* ."
+                        sh 'cp /zap/wrk/zap-report.* .'
                     }
                 }
             }
