@@ -1,0 +1,162 @@
+pipeline {
+    agent { label 'docker_maven' }
+
+    stages {
+
+        stage("Checkout") {
+            steps {
+                dir("mavenjava11-dir") {
+                    git branch: 'main',
+                        credentialsId: 'Git_credentials',
+                        url: 'https://github.com/nalajalapavankumar/spring-boot-app-cicd-pipeline.git'
+
+                    sh 'echo "Checkout DONE"'
+                    sh 'ls -R'
+                }
+            }
+        }
+
+        stage("Maven Build") {
+            steps {
+                container('maven') {
+                    dir('mavenjava11-dir/spring-boot-app') {
+                        sh 'mvn -version'
+                        sh 'mvn clean package -DskipTests'
+                    }
+                }
+            }
+        }
+
+        stage("SonarQube Analysis") {
+            steps {
+                container('maven') {
+                    dir('mavenjava11-dir/spring-boot-app') {
+                        withSonarQubeEnv('sonarqube-server') {
+                            sh '''
+                                mvn sonar:sonar \
+                                -Dsonar.projectKey=maven_java_new \
+                                -Dsonar.host.url=http://SONARQUBE-SERVER:30010
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+
+        stage("Quality Gate") {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    script {
+                        def qg = waitForQualityGate()
+                        if (qg.status != 'OK') {
+                            error "❌ Pipeline failed due to Quality Gate: ${qg.status}"
+                        } else {
+                            echo "✅ Quality Gate Passed"
+                        }
+                    }
+                }
+            }
+        }
+
+        stage("Docker Build") {
+            steps {
+                container('dockerhost') {
+                    dir('mavenjava11-dir/spring-boot-app') {
+                        sh 'docker build -t spring-boot-app:${BUILD_NUMBER} .'
+                    }
+                }
+            }
+        }
+
+        stage("Trivy Scan") {
+            steps {
+                container('trivy') {
+                    dir('mavenjava11-dir/spring-boot-app') {
+                        sh '''
+                            echo "Scanning Docker image..."
+
+                            trivy image \
+                            --no-progress \
+                            -f json \
+                            --severity HIGH,CRITICAL \
+                            -o trivy-report.json \
+                            spring-boot-app:${BUILD_NUMBER}
+
+                            ls -lart
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage("Push to Nexus") {
+            steps {
+                container('dockerhost') {
+                    dir('mavenjava11-dir/spring-boot-app') {
+
+                        withCredentials([usernamePassword(
+                            credentialsId: 'nexus-login',
+                            usernameVariable: 'NEXUS_USER',
+                            passwordVariable: 'NEXUS_PASS'
+                        )]) {
+
+                            sh '''
+                                echo $NEXUS_PASS | docker login NEXUS-IP:32000 \
+                                -u $NEXUS_USER --password-stdin
+
+                                docker tag spring-boot-app:${BUILD_NUMBER} \
+                                NEXUS-IP:32000/spring-boot-app:${BUILD_NUMBER}
+
+                                docker push NEXUS-IP:32000/spring-boot-app:${BUILD_NUMBER}
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+
+        stage("Deploy to Kubernetes") {
+            steps {
+                container('kubectl') {
+                    dir('mavenjava11-dir/Manifests') {
+
+                        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+
+                            sh '''
+                                export KUBECONFIG=$KUBECONFIG
+
+                                IMAGE_ID="NEXUS-IP:32000/spring-boot-app:${BUILD_NUMBER}"
+
+                                sed -i "s|IMAGE_NAME|${IMAGE_ID}|g" deployment.yml
+
+                                kubectl apply -f deployment.yml
+                                kubectl rollout status deployment spring-boot-app -n default
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+
+        stage("ZAP Scan") {
+            steps {
+                container('zap-image') {
+                    dir('mavenjava11-dir/Manifests') {
+
+                        sh """
+                            mkdir -p /zap/wrk
+
+                            zap-baseline.py \
+                            -t http://NODE-IP:NODEPORT \
+                            -r zap-report.html \
+                            -J zap-report.json \
+                            -I
+                        """
+
+                        sh "cp /zap/wrk/zap-report.* ."
+                    }
+                }
+            }
+        }
+    }
+}
